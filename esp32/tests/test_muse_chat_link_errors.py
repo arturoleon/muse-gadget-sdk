@@ -97,7 +97,9 @@ static bool muse_link_req_send(int64_t id,const void *data,size_t len,bool end,i
     return true;
 }
 static void muse_link_req_cancel(int64_t id) { (void)id; }
-void muse_hatch_wav_header(uint8_t *p,uint32_t rate) { assert(rate==16000); memset(p,0,44); }
+void muse_hatch_wav_header(uint8_t p[MUSE_HATCH_WAV_HEADER],uint32_t rate) {
+    assert(rate==16000); memset(p,0,MUSE_HATCH_WAV_HEADER);
+}
 size_t muse_hatch_base64(const uint8_t *p,size_t n,char *out) {
     (void)p; size_t len=(n+2)/3*4; memset(out,'A',len); return len;
 }
