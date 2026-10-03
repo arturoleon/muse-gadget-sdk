@@ -358,8 +358,11 @@ static esp_err_t sscma_stream_start(camera_frame_cb_t on_frame, void *ctx)
 static void sscma_stream_stop(void)
 {
     s_stop = true;
+    /* Waits for the task however long it takes: until it powers down, it still
+     * owns the chip and the SPI buffers, and every step it takes has a timeout. */
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(STREAM_STOP_MS)) != pdTRUE) {
-        ESP_LOGW(TAG, "stream didn't stop in time");
+        ESP_LOGW(TAG, "stream slow to stop, still waiting");
+        xSemaphoreTake(s_stopped, portMAX_DELAY);
     }
 }
 
