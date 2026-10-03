@@ -857,7 +857,7 @@ static void build_screen(void)
     s_state_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, 0xffffff);
     lv_obj_set_style_text_letter_space(s_state_lbl, s_small ? 1 : 2, 0);
     lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 22 : 40 + s_dy);
-    lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall);
+    lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
     /* This gadget's own name, dim under the state while it's unpaired: with
      * more than one on the bench, the screen says which one to pick in the
@@ -867,7 +867,7 @@ static void build_screen(void)
     lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 32 : 60 + s_dy);
     /* Same rule as the state label: a square 128 px screen centres Muse over
      * these rows, so there's nowhere to put this without covering the face. */
-    lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall);
+    lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
     s_caption_lbl = make_label(face, font_pick(&lv_font_unscii_16, &lv_font_unscii_8), COLOR_CAPTION);
     if (s_small) {
@@ -879,7 +879,8 @@ static void build_screen(void)
         lv_obj_set_style_bg_color(s_caption_lbl, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_caption_lbl, LV_OPA_70, 0);
         lv_label_set_long_mode(s_caption_lbl, LV_LABEL_LONG_MODE_DOTS);
-        lv_obj_align(s_caption_lbl, LV_ALIGN_BOTTOM_MID, 0, s_tall ? -30 : -3);
+        /* Touch screens need the caption above the navigation dots too. */
+        lv_obj_align(s_caption_lbl, LV_ALIGN_BOTTOM_MID, 0, (s_tall || s_tv) ? -30 : -3);
 
         s_bar = lv_obj_create(face);
         lv_obj_remove_style_all(s_bar);
@@ -1488,11 +1489,18 @@ esp_err_t muse_ui_start(void)
 {
     s_w = muse_board->width;
     s_h = muse_board->height;
-    s_small = s_h < 200 || s_w < 200;
+    /* The full layout assumes room for the 466 px board's header and bottom
+     * captions. Short landscape panels (BOX-3) need the compact layout too. */
+    bool short_landscape = s_w > s_h && s_h < 320;
+    s_small = s_h < 200 || s_w < 200 || short_landscape;
     s_tall = s_small && s_h >= s_w + 64;
     /* Small screens keep room for the status line and button icons. A narrow
      * one is as wide as Muse gets, in whole pixels. */
     s_canvas_px = s_small ? s_h * 3 / 4 : MUSE_PX_W * 5;
+    if (short_landscape) {
+        /* Leave the header's first 40 rows and bottom captions clear. */
+        s_canvas_px = s_h * 2 / 3;
+    }
     if (s_canvas_px > s_w) {
         s_canvas_px = s_w / MUSE_PX_W * MUSE_PX_W;
     }

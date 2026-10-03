@@ -58,6 +58,7 @@ ERROR_LINES = 60
 
 # muse_board->name, as "@status" reports it -> tools/muse/board.sh's name
 BOARDS = {
+    "Espressif ESP32-S3-BOX-3": "box3",
     "Waveshare ESP32-S3-Touch-AMOLED-1.75C": "s3",
     "Waveshare ESP32-S3-Touch-AMOLED-1.75": "s3n",
     "AIPI Lite": "aipi",
@@ -67,7 +68,7 @@ BOARDS = {
     "M5Stack Cardputer ADV": "cardputer-adv",
     "M5Stack StickC Plus2": "plus2",
 }
-CHAT_BOARDS = ("s3", "s3n", "aipi", "sticks3", "watcher")
+CHAT_BOARDS = ("s3", "s3n", "aipi", "box3", "sticks3", "watcher")
 
 
 class Stop(Exception):
@@ -314,7 +315,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", help="the board's serial port (found by itself when there's one board)")
     ap.add_argument("--board", choices=sorted(set(BOARDS.values())),
-                    help="the board, if it doesn't answer yet: flashes s3, aipi or sticks3 firmware with serial "
+                    help="the board, if it doesn't answer yet: flashes s3, aipi, box3, sticks3 or watcher firmware with serial "
                          "chat first, or with --reply, the firmware to build")
     ap.add_argument("--edit", metavar="CHANGE", help="ask Muse to change the avatar you have, not redraw it")
     ap.add_argument("--reply", metavar="FILE", help="use this reply from Muse instead of asking through the board")
