@@ -167,42 +167,33 @@ chip, port and baud.
 
 ## Cardputer ADV port
 
-Experimental port, tested on Cardputer ADV hardware with ESP-IDF 6.0.1:
-240×135 display, keyboard navigation, BLE/Wi-Fi pairing, voice-note upload,
-and text reply captions. Audio capture/playback timing was checked at 16 kHz.
-The no-PSRAM profile requests text replies over the live chat subscription;
-subscription begins at release to keep inbound traffic out of recording.
+Experimental ADV-only port, tested with ESP-IDF 6.0.1. Supports the display,
+keyboard, BLE/Wi-Fi pairing, voice notes and text replies.
 
-This profile is for the **ADV**, not the original Cardputer's GPIO keyboard.
-The TCA8418 keyboard uses **Space** or **GO** for talk/confirm outside the
-menu. **Esc** opens the menu, backs out of a page or cancels a confirmation;
-on the menu list it closes the menu. **Enter** selects (and confirms pairing).
-**Up/Down** move through rows, **Left/Right** decrease/increase values. The
-arrow legends share `;` (up), `.` (down), `,` (left), `/` (right); they work
-with or without Fn. Space/GO do not change settings while the menu is open.
-The other keys do not type chat messages in this initial port.
+- Hold **Space/GO** to talk. **Esc** opens/closes the menu or goes back;
+  **Enter** selects and confirms pairing.
+- **Up/Down** (`;`/`.`) navigate; **Left/Right** (`,`/`/`) change values,
+  with or without Fn. Typing chat messages is not supported.
+- Menu power-off enters deep sleep; **GO** wakes it. Use the side switch
+  for physical power-off.
 
-No PSRAM: voice input uses the existing control session and replies are text.
-Long or multi-message replies can be shortened; use the Muse app for the
-full conversation. Spoken replies, images and the home-network tunnel are
-disabled. Battery
-telemetry, SD, IMU,
-IR and expansion peripherals are not implemented. Power off in the menu
-enters deep sleep; GO wakes it. Use the side switch for physical power off.
+Replies may be shortened; use the Muse app for the full conversation.
+Spoken replies, images, the home-network tunnel, battery telemetry and
+extra peripherals (SD, IMU, IR, expansion) are not supported.
 
-Build with `tools/muse/board.sh build cardputer-adv`, then flash with
-`tools/muse/board.sh flash cardputer-adv PORT`. Set your SDK token in the
-ignored `build-muse-m5stack-cardputer-adv/sdkconfig`, not a board overlay.
-For initial flashing, switch off, hold GO while connecting USB, then release
-GO. Back up the 8 MB flash before replacing existing firmware:
+Set your SDK token in `build-muse-m5stack-cardputer-adv/sdkconfig` (ignored
+by Git). Build with `tools/muse/board.sh build cardputer-adv` and flash with
+`tools/muse/board.sh flash cardputer-adv PORT`. To enter download mode,
+switch off, hold GO while connecting USB, then release GO.
+
+Back up the original 8 MB firmware before flashing; keep it outside Git:
 
 ```sh
 python -m esptool --chip esp32s3 -p PORT read-flash 0 0x800000 cardputer-adv-backup.bin
 ```
 
-Keep backups outside Git; they can contain saved Wi-Fi credentials. Restore
-with `write-flash 0 cardputer-adv-backup.bin`. Pair through Muse app Settings >
-Devices > Developer mode, then Add Device, and press GO when prompted.
+Restore with `write-flash 0 cardputer-adv-backup.bin`. Pair in Muse under
+Settings > Devices > Developer mode > Add Device, then press Enter.
 
 ## ESP32-S3-BOX-3
 
