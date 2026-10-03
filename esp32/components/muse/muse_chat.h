@@ -39,7 +39,9 @@ extern "C" {
  *
  * Without CONFIG_MUSE_HATCH (no PSRAM) the same API is backed by
  * muse_chat_link.c: the note rides Home Link's session to its paired VM and
- * replies come back as text only (no audio from turn_read).
+ * replies come back as text only (no audio from turn_read). Captions retain
+ * up to 1,023 UTF-8 bytes; at most two completed messages await processing.
+ * Bursts can omit older messages. Use the Muse app for the full conversation.
  */
 
 typedef enum {
@@ -89,7 +91,7 @@ typedef enum {
     MUSE_HATCH_EV_REPLY,    /* reply text so far */
     MUSE_HATCH_EV_DONE,     /* reply complete; the audio stream is drained after this */
     MUSE_HATCH_EV_ERROR,    /* turn failed; text says why */
-    MUSE_HATCH_EV_SENT,     /* the VM has the note (CONFIG_MUSE_HATCH only) */
+    MUSE_HATCH_EV_SENT,     /* the VM has acknowledged the note */
 } muse_hatch_ev_t;
 
 /* Non-blocking; copies the event's text. Events of cancelled turns are dropped. */

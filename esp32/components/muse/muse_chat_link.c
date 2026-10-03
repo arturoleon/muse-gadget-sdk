@@ -18,15 +18,9 @@
  * Muse chat turns on boards without PSRAM (CONFIG_MUSE_HATCH=n). There's no room
  * for a second TLS and Noise connection or for MP3 decoding, so turns ride
  * Home Link's own session (muse_link_req_*) and replies are text only:
- *   talk    -> POST /chat/stream with the voice note, sent as it's recorded
- *   release -> GET /chat/history?limit=1 marks where the chat ends; the
- *              reply to the POST names the note's message id
- *   reply   -> history rows after the mark, one at a time, until the
- *              assistant's replies to the note; they scroll as captions
- * One row per request: a row is ~2 KB plus three copies of its text, and a
- * reply frame larger than Link's session buffers would end that session. Rows
- * are read in place as they arrive, without cJSON, which would need more RAM
- * than the row itself.
+ * A live POST /chat/subscribe receives NDJSON replies while POST /chat/stream
+ * uploads the note. Both use the existing device token and Link connection.
+ * Lines are parsed without cJSON; bounded buffers keep internal RAM use small.
  */
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
@@ -54,11 +48,9 @@ static const char *TAG = "muse_chat_link";
 #define STAGE_BYTES 1536                /* PCM per body chunk: 2 KB of base64, 48 ms */
 #define CHUNK_BYTES (STAGE_BYTES / 3 * 4)
 #define ACK_MAX 2048
-#define ROW_MAX 12288                   /* a history page split across frames, gathered */
 #define TEXT_MAX 1024                   /* reply text kept for the captions */
 #define EV_TEXT 72
 #define SEND_WAIT_MS 200               /* the press queues the pre-roll all at once */
-#define POLL_US 500000                  /* between history polls while nothing's new */
 #define SETTLE_US 3000000               /* quiet after a reply before the turn ends */
 #define REPLY_TIMEOUT_US 60000000
 #define READ_CHARS_PER_S 14             /* caption scroll, about speaking pace */
@@ -71,14 +63,13 @@ typedef struct {
     bool done;
     bool overflow;
     size_t len;
-    size_t cap;         /* fixed body (the note's ack); 0: history, gathered only if split */
+    size_t cap;         /* fixed note ACK buffer; 0: incremental subscription parser */
     char *body;
 } rx_t;
 
-/* The one row of a history page. */
+/* A subscription event, decoded without allocating a JSON tree. */
 typedef struct {
-    bool ok;            /* the page parsed */
-    bool found;         /* it had a row */
+    char type[16];
     bool ready;         /* display_text_ready */
     uint64_t seq;
     char event[24];
@@ -87,7 +78,7 @@ typedef struct {
     char text[TEXT_MAX];
 } row_t;
 
-enum { RX_NOTE, RX_ROW, RX_COUNT };
+enum { RX_NOTE, RX_SUB, RX_COUNT };
 
 typedef enum { T_IDLE, T_TALKING, T_ACK, T_REPLY } phase_t;
 
@@ -100,7 +91,13 @@ static SemaphoreHandle_t s_rx_lock;
 static rx_t s_rx[RX_COUNT];
 static int64_t s_stream[RX_COUNT];      /* open request per slot, 0 none */
 static QueueHandle_t s_events;
-static row_t s_row;                     /* written with s_rx[RX_ROW], under s_rx_lock */
+/* Subscription callback state, always under s_rx_lock. Keep the two newest
+ * completed messages until the voice task drains them, including before ACK. */
+static row_t s_row, s_delta, s_pending[2];
+static unsigned s_pending_count;
+static uint64_t s_last_seq;
+static bool s_early_evicted;
+static char s_note_id[80], s_parent_id[80]; /* ACK IDs shared under s_rx_lock */
 
 /* Voice task only. */
 static struct {
@@ -108,290 +105,346 @@ static struct {
     uint8_t *stage;                     /* PCM waiting for the next chunk */
     size_t stage_len;
     char *chunk;
-    bool marked;                        /* have the chat's last seq */
-    uint64_t after;                     /* history seq read up to */
-    char note_id[80];
-    int64_t t_end, t_poll, t_reply, t_show;
-    bool heard, replied, skipped_big;
-    bool after_note;                    /* the walk is past the note's row, before any other user row */
+    char note_id[80], parent_id[80], seen[2][80];
+    unsigned seen_count;
+    int64_t t_end, t_reply, t_show;
+    bool replied;
     char error[EV_TEXT];                /* why the turn failed, repeated at the release */
     char text[TEXT_MAX];
     char shown[EV_TEXT];
 } s_turn;
 
-/* ---- History pages, read in place ---- */
+/* ---- Incremental NDJSON events ---- */
 
+/* Parse selected fields as bytes arrive, without retaining the NDJSON line.
+ * Large text/metadata values therefore cannot hide the final-message marker.
+ * Unknown objects are traversed with bounded depth; strings are UTF-8 clipped. */
+enum { J_KEY, J_COLON, J_VALUE, J_COMMA };
+enum {
+    F_SKIP, F_TYPE, F_EVENT, F_SEQ, F_PAYLOAD, F_ID, F_ID_ALT,
+    F_PARENT, F_PARENT_ALT, F_TEXT, F_CONTENT, F_DELTA, F_READY,
+};
 typedef struct {
-    const char *p, *end;
-} scan_t;
+    uint8_t state, field, context;
+    bool object;
+} json_frame_t;
+static struct {
+    json_frame_t stack[32];
+    unsigned depth;
+    bool started, complete, bad, string, key, escape, scalar, clipped;
+    unsigned unicode, digits, high, utf8_len, utf8_need;
+    unsigned text_priority, id_priority, parent_priority;
+    char utf8[4], key_text[24], literal[24];
+    char *out;
+    size_t len, cap;
+    uint8_t field;
+} s_json;
 
-static void skip_ws(scan_t *s)
+static void parser_reset(void)
 {
-    while (s->p < s->end && (*s->p == ' ' || *s->p == '\n' || *s->p == '\r' || *s->p == '\t')) {
-        s->p++;
-    }
+    memset(&s_json, 0, sizeof(s_json));
+    memset(&s_row, 0, sizeof(s_row));
+    s_row.ready = true;
 }
 
-static bool expect(scan_t *s, char c)
+static void string_put(const char *p, size_t n)
 {
-    skip_ws(s);
-    if (s->p < s->end && *s->p == c) {
-        s->p++;
-        return true;
-    }
-    return false;
-}
-
-static int hex4(const char *p)
-{
-    int v = 0;
-    for (int i = 0; i < 4; i++) {
-        char c = p[i];
-        v = v << 4 | (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
-                      : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
-    }
-    return v;
-}
-
-/* Reads the string at s->p into out (may be NULL), cut to fit on a character boundary. */
-static bool read_string(scan_t *s, char *out, size_t cap)
-{
-    if (s->p >= s->end || *s->p != '"') {
-        return false;
-    }
-    size_t n = 0;
-    for (s->p++; s->p < s->end && *s->p != '"'; s->p++) {
-        char buf[4];
-        size_t len = 1;
-        buf[0] = *s->p;
-        if (*s->p == '\\' && ++s->p < s->end) {
-            switch (*s->p) {
-            case 'n': buf[0] = '\n'; break;
-            case 't': buf[0] = ' '; break;
-            case 'r': buf[0] = ' '; break;
-            case 'b': case 'f': buf[0] = ' '; break;
-            case 'u': {
-                if (s->end - s->p < 5) {
-                    return false;
-                }
-                uint32_t c = hex4(s->p + 1);
-                s->p += 4;
-                if (c >= 0xD800 && c < 0xDC00 && s->end - s->p >= 7 && s->p[1] == '\\' && s->p[2] == 'u') {
-                    c = 0x10000 + ((c - 0xD800) << 10) + (hex4(s->p + 3) - 0xDC00);
-                    s->p += 6;
-                }
-                if (c < 0x80) {
-                    buf[0] = (char)c;
-                } else if (c < 0x800) {
-                    buf[0] = (char)(0xC0 | c >> 6);
-                    buf[1] = (char)(0x80 | (c & 63));
-                    len = 2;
-                } else if (c < 0x10000) {
-                    buf[0] = (char)(0xE0 | c >> 12);
-                    buf[1] = (char)(0x80 | (c >> 6 & 63));
-                    buf[2] = (char)(0x80 | (c & 63));
-                    len = 3;
-                } else {
-                    buf[0] = (char)(0xF0 | c >> 18);
-                    buf[1] = (char)(0x80 | (c >> 12 & 63));
-                    buf[2] = (char)(0x80 | (c >> 6 & 63));
-                    buf[3] = (char)(0x80 | (c & 63));
-                    len = 4;
-                }
-                break;
-            }
-            default: buf[0] = *s->p; break;   /* \" \\ \/ */
-            }
-        }
-        if (out && n + len < cap) {
-            memcpy(out + n, buf, len);
-            n += len;
-        }
-    }
-    if (out && cap) {
-        while (n && (out[n - 1] & 0xC0) == 0x80 && s->p >= s->end) {
-            n--;
-        }
-        out[n] = '\0';
-    }
-    if (s->p >= s->end) {
-        return false;
-    }
-    s->p++;
-    return true;
-}
-
-/* Steps over one value: a string, number, literal, or a whole object or array. */
-static bool skip_value(scan_t *s)
-{
-    int depth = 0;
-    skip_ws(s);
-    while (s->p < s->end) {
-        char c = *s->p;
-        if (c == '"') {
-            if (!read_string(s, NULL, 0)) {
-                return false;
-            }
-        } else if (c == '{' || c == '[') {
-            depth++;
-            s->p++;
-        } else if (c == '}' || c == ']') {
-            if (!depth) {
-                return true;
-            }
-            depth--;
-            s->p++;
-        } else if (c == ',' && !depth) {
-            return true;
-        } else {
-            s->p++;
-        }
-        if (!depth && (c == '"' || c == '}' || c == ']')) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/* Reads a string member's value into out; anything else (null) is skipped. */
-static bool read_field(scan_t *s, char *out, size_t cap)
-{
-    skip_ws(s);
-    return s->p < s->end && *s->p == '"' ? read_string(s, out, cap) : skip_value(s);
-}
-
-static bool parse_row(scan_t *s, row_t *r)
-{
-    if (!expect(s, '{')) {
-        return false;
-    }
-    if (expect(s, '}')) {
-        return true;
-    }
-    do {
-        char key[24];
-        skip_ws(s);
-        if (!read_string(s, key, sizeof(key)) || !expect(s, ':')) {
-            return false;
-        }
-        skip_ws(s);
-        bool ok;
-        if (!strcmp(key, "seq")) {
-            for (r->seq = 0; s->p < s->end && *s->p >= '0' && *s->p <= '9'; s->p++) {
-                r->seq = r->seq * 10 + (*s->p - '0');
-            }
-            ok = skip_value(s);
-        } else if (!strcmp(key, "display_text_ready")) {
-            r->ready = s->p < s->end && *s->p == 't';
-            ok = skip_value(s);
-        } else if (!strcmp(key, "event_name")) {
-            ok = read_field(s, r->event, sizeof(r->event));
-        } else if (!strcmp(key, "message_id")) {
-            ok = read_field(s, r->msg, sizeof(r->msg));
-        } else if (!strcmp(key, "reply_to_message_id")) {
-            ok = read_field(s, r->reply_to, sizeof(r->reply_to));
-        } else if (!strcmp(key, "display_text")) {
-            ok = read_field(s, r->text, sizeof(r->text));
-        } else {
-            ok = skip_value(s);
-        }
-        if (!ok) {
-            return false;
-        }
-    } while (expect(s, ','));
-    return expect(s, '}');
-}
-
-static bool parse_object(scan_t *s, row_t *r);
-
-/* {"ok":true,"result":{"chat_events":[row],...}}: fills r from the first row, if any. */
-static bool parse_page(const char *p, size_t n, row_t *r)
-{
-    scan_t s = { p, p + n };
-    memset(r, 0, sizeof(*r));
-    return parse_object(&s, r);
-}
-
-static bool parse_object(scan_t *sp, row_t *r)
-{
-    scan_t s = *sp;
-    if (!expect(&s, '{')) {
-        return false;
-    }
-    if (expect(&s, '}')) {
-        *sp = s;
-        return true;
-    }
-    do {
-        char key[24];
-        skip_ws(&s);
-        if (!read_string(&s, key, sizeof(key)) || !expect(&s, ':')) {
-            return false;
-        }
-        if (!strcmp(key, "result")) {
-            if (!parse_object(&s, r)) {
-                return false;
-            }
-        } else if (strcmp(key, "chat_events")) {
-            if (!skip_value(&s)) {
-                return false;
-            }
-        } else if (expect(&s, '[') && !expect(&s, ']')) {
-            if (!parse_row(&s, r)) {
-                return false;
-            }
-            r->found = true;
-            while (expect(&s, ',')) {
-                if (!skip_value(&s)) {
-                    return false;
-                }
-            }
-            if (!expect(&s, ']')) {
-                return false;
-            }
-        }
-    } while (expect(&s, ','));
-    if (!expect(&s, '}')) {
-        return false;
-    }
-    *sp = s;
-    return true;
-}
-
-/* A page in one frame is parsed straight from Link's buffer; a split one is gathered first. */
-static void row_data(rx_t *rx, const uint8_t *data, size_t len, bool end)
-{
-    if (rx->status != 200 || rx->overflow) {
+    if (!s_json.out || s_json.clipped) return;
+    if (s_json.len + n >= s_json.cap) {
+        s_json.clipped = true;
         return;
     }
-    if (!rx->body && end) {
-        s_row.ok = parse_page((const char *)data, len, &s_row);
+    memcpy(s_json.out + s_json.len, p, n);
+    s_json.len += n;
+    s_json.out[s_json.len] = 0;
+}
+
+static void codepoint_put(unsigned c)
+{
+    char out[4];
+    size_t n;
+    if (c < 0x80) { out[0] = c; n = 1; }
+    else if (c < 0x800) { out[0] = 0xc0 | (c >> 6); out[1] = 0x80 | (c & 63); n = 2; }
+    else if (c < 0x10000) {
+        out[0] = 0xe0 | (c >> 12); out[1] = 0x80 | (c >> 6 & 63); out[2] = 0x80 | (c & 63); n = 3;
+    } else {
+        out[0] = 0xf0 | (c >> 18); out[1] = 0x80 | (c >> 12 & 63);
+        out[2] = 0x80 | (c >> 6 & 63); out[3] = 0x80 | (c & 63); n = 4;
+    }
+    string_put(out, n);
+}
+
+static uint8_t field_for(const char *key, unsigned context)
+{
+    if (!context) return F_SKIP;
+    if (context == 1) {
+        if (!strcmp(key, "type")) return F_TYPE;
+        if (!strcmp(key, "event")) return F_EVENT;
+        if (!strcmp(key, "seq")) return F_SEQ;
+        if (!strcmp(key, "payload")) return F_PAYLOAD;
+    }
+    if (!strcmp(key, "message_id")) return F_ID;
+    if (!strcmp(key, "id")) return F_ID_ALT;
+    if (!strcmp(key, "reply_to_message_id")) return F_PARENT;
+    if (!strcmp(key, "parent_message_id")) return F_PARENT_ALT;
+    if (!strcmp(key, "display_text")) return F_TEXT;
+    if (!strcmp(key, "content")) return F_CONTENT;
+    if (!strcmp(key, "text")) return F_DELTA;
+    if (!strcmp(key, "display_text_ready")) return F_READY;
+    return F_SKIP;
+}
+
+static void string_begin(bool key, unsigned field)
+{
+    s_json.string = true;
+    s_json.key = key;
+    s_json.field = field;
+    s_json.escape = s_json.clipped = false;
+    s_json.digits = s_json.high = s_json.utf8_len = s_json.utf8_need = 0;
+    s_json.len = 0;
+    s_json.out = NULL;
+    s_json.cap = 0;
+    if (key) { s_json.out = s_json.key_text; s_json.cap = sizeof(s_json.key_text); }
+    else {
+        unsigned *priority = NULL, rank = 0;
+        if (field == F_ID || field == F_ID_ALT) { priority = &s_json.id_priority; rank = field == F_ID ? 2 : 1; }
+        if (field == F_PARENT || field == F_PARENT_ALT) { priority = &s_json.parent_priority; rank = field == F_PARENT ? 2 : 1; }
+        if (field == F_TEXT || field == F_CONTENT || field == F_DELTA) {
+            priority = &s_json.text_priority; rank = field == F_TEXT ? 3 : field == F_CONTENT ? 2 : 1;
+        }
+        if (priority && s_json.stack[s_json.depth - 1].context == 2) rank += 4;
+        if (priority && rank < *priority) field = F_SKIP;
+        else if (priority) *priority = rank;
+        switch (field) {
+        case F_TYPE: s_json.out = s_row.type; s_json.cap = sizeof(s_row.type); break;
+        case F_EVENT: s_json.out = s_row.event; s_json.cap = sizeof(s_row.event); break;
+        case F_ID: case F_ID_ALT: s_json.out = s_row.msg; s_json.cap = sizeof(s_row.msg); break;
+        case F_PARENT: case F_PARENT_ALT: s_json.out = s_row.reply_to; s_json.cap = sizeof(s_row.reply_to); break;
+        case F_TEXT: case F_CONTENT: case F_DELTA: s_json.out = s_row.text; s_json.cap = sizeof(s_row.text); break;
+        default: break;
+        }
+    }
+    if (s_json.out) s_json.out[0] = 0;
+}
+
+static void string_byte(unsigned char c)
+{
+    if (s_json.digits) {
+        unsigned hex = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                     : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 16;
+        if (hex == 16) { s_json.bad = true; return; }
+        s_json.unicode = s_json.unicode * 16 + hex;
+        if (--s_json.digits) return;
+        unsigned cp = s_json.unicode;
+        if (s_json.high) {
+            if (cp < 0xdc00 || cp > 0xdfff) { s_json.bad = true; return; }
+            cp = 0x10000 + ((s_json.high - 0xd800) << 10) + cp - 0xdc00;
+            s_json.high = 0;
+        } else if (cp >= 0xd800 && cp <= 0xdbff) { s_json.high = cp; return; }
+        else if (cp >= 0xdc00 && cp <= 0xdfff) { s_json.bad = true; return; }
+        /* Captions are C strings; render embedded NUL as a space. */
+        codepoint_put(cp ? cp : ' ');
         return;
     }
-    if (len) {
-        char *grown = rx->len + len <= ROW_MAX ? realloc(rx->body, rx->len + len) : NULL;
-        if (!grown) {
-            rx->overflow = true;
+    if (s_json.escape) {
+        s_json.escape = false;
+        if (c == 'u') { s_json.digits = 4; s_json.unicode = 0; return; }
+        if (s_json.high) { s_json.bad = true; return; }
+        switch (c) {
+        case 'n': c = '\n'; break;
+        case 't': case 'r': case 'b': case 'f': c = ' '; break;
+        case '"': case '\\': case '/': break;
+        default: s_json.bad = true; return;
+        }
+        char ch = c;
+        string_put(&ch, 1);
+        return;
+    }
+    if (s_json.utf8_need) {
+        if ((c & 0xc0) != 0x80) { s_json.bad = true; return; }
+        s_json.utf8[s_json.utf8_len++] = c;
+        if (s_json.utf8_len == s_json.utf8_need) {
+            string_put(s_json.utf8, s_json.utf8_len);
+            s_json.utf8_need = s_json.utf8_len = 0;
+        }
+        return;
+    }
+    if (c == '\\') { s_json.escape = true; return; }
+    if (s_json.high) { s_json.bad = true; return; }
+    if (c == '"') {
+        s_json.string = false;
+        if (s_json.clipped && !s_json.key && s_json.field != F_TEXT
+            && s_json.field != F_CONTENT && s_json.field != F_DELTA) s_json.bad = true;
+        if (s_json.key) {
+            json_frame_t *f = &s_json.stack[s_json.depth - 1];
+            f->field = s_json.clipped ? F_SKIP : field_for(s_json.key_text, f->context);
+            f->state = J_COLON;
+        }
+    } else if (c < 0x20) s_json.bad = true;
+    else if (c >= 0x80) {
+        s_json.utf8_need = c >= 0xc2 && c <= 0xdf ? 2 : c >= 0xe0 && c <= 0xef ? 3
+                         : c >= 0xf0 && c <= 0xf4 ? 4 : 0;
+        if (!s_json.utf8_need) s_json.bad = true;
+        else { s_json.utf8[0] = c; s_json.utf8_len = 1; }
+    } else {
+        char ch = c;
+        string_put(&ch, 1);
+    }
+}
+
+static void scalar_end(void)
+{
+    s_json.scalar = false;
+    if (s_json.clipped) { if (s_json.field != F_SKIP) s_json.bad = true; return; }
+    s_json.literal[s_json.len] = 0;
+    if (s_json.field == F_SEQ) {
+        s_row.seq = 0;
+        for (size_t i = 0; i < s_json.len; i++) {
+            unsigned digit = (unsigned char)s_json.literal[i] - '0';
+            if (digit > 9 || s_row.seq > (UINT64_MAX - digit) / 10) { s_json.bad = true; return; }
+            s_row.seq = s_row.seq * 10 + digit;
+        }
+    } else if (s_json.field == F_READY) {
+        s_row.ready = strcmp(s_json.literal, "false") != 0;
+    }
+}
+
+static void parser_byte(unsigned char c)
+{
+    if (s_json.bad) return;
+    if (s_json.string) { string_byte(c); return; }
+    bool space = c == ' ' || c == '\t' || c == '\r';
+    if (s_json.scalar) {
+        if (!space && c != ',' && c != '}' && c != ']') {
+            if (s_json.len < sizeof(s_json.literal) - 1) s_json.literal[s_json.len++] = c;
+            else s_json.clipped = true;
             return;
         }
-        memcpy(grown + rx->len, data, len);
-        rx->body = grown;
-        rx->len += len;
+        scalar_end();
     }
-    if (end) {
-        s_row.ok = parse_page(rx->body, rx->len, &s_row);
+    if (space) return;
+    if (s_json.complete) { s_json.bad = true; return; }
+    json_frame_t *f = s_json.depth ? &s_json.stack[s_json.depth - 1] : NULL;
+    if (c == '}' || c == ']') {
+        if (!f || f->object != (c == '}') || f->state == J_COLON
+            || (f->state != J_COMMA && f->state != (f->object ? J_KEY : J_VALUE))) {
+            s_json.bad = true; return;
+        }
+        if (!--s_json.depth) s_json.complete = true;
+        return;
     }
+    if (f && f->state == J_KEY && c == '"') { string_begin(true, F_SKIP); return; }
+    if (f && f->state == J_COLON && c == ':') { f->state = J_VALUE; return; }
+    if (f && f->state == J_COMMA && c == ',') {
+        f->state = f->object ? J_KEY : J_VALUE; f->field = F_SKIP; return;
+    }
+    if ((f && f->state != J_VALUE) || (!f && (s_json.started || c != '{'))) {
+        s_json.bad = true; return;
+    }
+    unsigned field = f ? f->field : F_SKIP;
+    if (f) f->state = J_COMMA;
+    if (c == '{' || c == '[') {
+        if (s_json.depth == sizeof(s_json.stack) / sizeof(s_json.stack[0])) { s_json.bad = true; return; }
+        unsigned context = !s_json.started ? 1 : field == F_PAYLOAD ? 2 : 0;
+        s_json.stack[s_json.depth++] = (json_frame_t){
+            .state = c == '{' ? J_KEY : J_VALUE, .object = c == '{', .context = context };
+        s_json.started = true;
+    } else if (c == '"') string_begin(false, field);
+    else {
+        s_json.scalar = true; s_json.field = field; s_json.len = 1;
+        s_json.literal[0] = c; s_json.clipped = false;
+    }
+}
+
+static bool related(const row_t *row)
+{
+    return !s_note_id[0] || !row->reply_to[0]
+        || !strcmp(row->reply_to, s_note_id) || !strcmp(row->reply_to, s_parent_id);
+}
+
+/* Append whole UTF-8 characters even when the caption is already nearly full. */
+static void text_append(char *out, size_t cap, const char *text)
+{
+    size_t used = strlen(out), n = strlen(text);
+    if (n >= cap - used) {
+        n = cap - used - 1;
+        while (n && ((unsigned char)text[n] & 0xc0) == 0x80) n--;
+    }
+    memcpy(out + used, text, n);
+    out[used + n] = 0;
+}
+
+/* Called with the receive lock held; never waits on the voice task. */
+static void subscription_event(void)
+{
+    if (s_json.bad || !s_json.complete || strcmp(s_row.type, "event")) return;
+    if (s_row.seq && s_row.seq <= s_last_seq) return;
+    if (s_row.seq) s_last_seq = s_row.seq;
+    bool append = !strcmp(s_row.event, "delta.text_append");
+    bool start = !strcmp(s_row.event, "delta.message_start");
+    bool done = !strcmp(s_row.event, "delta.message_done");
+    bool full = !strcmp(s_row.event, "message.assistant");
+    if ((!append && !start && !done && !full) || !s_row.msg[0]) return;
+    if (!related(&s_row)) return;
+    if (start || append) {
+        if (strcmp(s_delta.msg, s_row.msg)) {
+            memset(&s_delta, 0, sizeof(s_delta));
+            strlcpy(s_delta.msg, s_row.msg, sizeof(s_delta.msg));
+        }
+        if (s_row.reply_to[0]) strlcpy(s_delta.reply_to, s_row.reply_to, sizeof(s_delta.reply_to));
+        if (append) {
+            text_append(s_delta.text, sizeof(s_delta.text), s_row.text);
+        }
+        return;
+    }
+    if (!done && !s_row.ready) return;
+    if (!strcmp(s_row.msg, s_delta.msg)) {
+        if (!s_row.text[0]) strlcpy(s_row.text, s_delta.text, sizeof(s_row.text));
+        if (!s_row.reply_to[0]) strlcpy(s_row.reply_to, s_delta.reply_to, sizeof(s_row.reply_to));
+    }
+    if (!related(&s_row) || !s_row.text[0]) return;
+    strlcpy(s_row.event, "message.assistant", sizeof(s_row.event));
+    s_row.ready = true;
+    /* Coalesce the done event and persisted full message, including before ACK. */
+    for (unsigned i = 0; i < s_pending_count; i++) {
+        if (!strcmp(s_pending[i].msg, s_row.msg)) { s_pending[i] = s_row; return; }
+    }
+    /* Keep the two newest finals if the voice task has not drained the queue.
+     * Before ACK they are provisional: unrelated traffic must not fail a turn
+     * or grow memory without bound. Remember eviction for a useful timeout. */
+    if (s_pending_count == 2) {
+        if (!s_note_id[0]) s_early_evicted = true;
+        s_pending[0] = s_pending[1];
+        s_pending_count--;
+    }
+    s_pending[s_pending_count++] = s_row;
+}
+
+static void row_data(rx_t *rx, const uint8_t *data, size_t len, bool end)
+{
+    if (rx->status != 200) return;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\n') {
+            subscription_event();
+            parser_reset();
+        } else parser_byte(data[i]);
+    }
+    if (end) { subscription_event(); parser_reset(); }
 }
 
 static void rx_clear(rx_t *rx)
 {
-    if (!rx->cap) {
-        free(rx->body);
-        rx->body = NULL;
-    }
     rx->status = 0;
     rx->done = rx->overflow = false;
     rx->len = 0;
+    if (!rx->cap) {
+        parser_reset();
+        s_pending_count = 0;
+        s_last_seq = 0;
+        s_early_evicted = false;
+        s_note_id[0] = s_parent_id[0] = 0;
+        memset(&s_delta, 0, sizeof(s_delta));
+    }
 }
 
 static void on_frame(void *ctx, int status, const uint8_t *data, size_t len, bool end)
@@ -423,7 +476,8 @@ static bool request(int slot, const char *verb, const char *path, bool json, boo
     char req_id[40];
     snprintf(req_id, sizeof(req_id), "muse-%08" PRIx32 "-%08" PRIx32, esp_random(), esp_random());
     const char *headers[] = { "x-request-id", req_id, "x-app-id", "hatch-web",
-                              json ? "Content-Type" : NULL, "application/json", NULL };
+                              json ? "Content-Type" : NULL, "application/json",
+                              "Accept", slot == RX_SUB ? "application/x-ndjson" : "application/json", NULL };
     rx_t *rx = &s_rx[slot];
     xSemaphoreTake(s_rx_lock, portMAX_DELAY);
     rx->gen++;
@@ -431,7 +485,6 @@ static bool request(int slot, const char *verb, const char *path, bool json, boo
     if (rx->cap) {
         rx->body[0] = '\0';
     }
-    s_row.ok = false;
     uintptr_t token = (uintptr_t)rx->gen << 1 | slot;
     xSemaphoreGive(s_rx_lock);
     s_stream[slot] = muse_link_req_open(verb, path, headers, end_body, on_frame, (void *)token);
@@ -473,7 +526,7 @@ static void emit(muse_hatch_ev_t type, const char *text)
 static void end_turn(void)
 {
     drop(RX_NOTE);
-    drop(RX_ROW);
+    drop(RX_SUB);
     free(s_turn.stage);
     free(s_turn.chunk);
     s_turn.stage = NULL;
@@ -505,23 +558,11 @@ static bool send_stage(bool last)
 
 /* ---- The reply ---- */
 
-/* The chat's newest row (none yet: the mark) or the next one after it. */
-static bool poll_row(void)
-{
-    char path[64];
-    if (s_turn.marked) {
-        snprintf(path, sizeof(path), "/chat/history?limit=1&after_seq=%" PRIu64, s_turn.after);
-    } else {
-        strlcpy(path, "/chat/history?limit=1", sizeof(path));
-    }
-    return request(RX_ROW, "GET", path, false, true);
-}
-
 static void on_ack(void)
 {
     rx_t *rx = &s_rx[RX_NOTE];
-    if (rx->status != 200) {
-        ESP_LOGW(TAG, "chat/stream: %d %.120s", rx->status, rx->body);
+    if (rx->status != 200 || rx->overflow) {
+        ESP_LOGW(TAG, "chat/stream: %d", rx->status);
         fail(rx->status < 0 ? "LOST CONNECTION TO MUSE" : "MUSE DIDN'T TAKE IT");
         return;
     }
@@ -529,84 +570,59 @@ static void on_ack(void)
     cJSON *result = cJSON_GetObjectItem(root, "result");
     const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_IsObject(result) ? result : root, "message_id"));
     strlcpy(s_turn.note_id, id ? id : "", sizeof(s_turn.note_id));
+    const char *parent = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_IsObject(result) ? result : root, "reply_to_message_id"));
+    strlcpy(s_turn.parent_id, parent ? parent : "", sizeof(s_turn.parent_id));
     cJSON_Delete(root);
     if (!s_turn.note_id[0]) {
-        ESP_LOGW(TAG, "chat/stream ack without a message id: %.120s", rx->body);
+        ESP_LOGW(TAG, "chat/stream ack without a message id");
         fail("MUSE DIDN'T TAKE IT");
         return;
     }
-    ESP_LOGI(TAG, "note %s sent; ack after %.2fs", s_turn.note_id, (esp_timer_get_time() - s_turn.t_end) / 1e6);
+    xSemaphoreTake(s_rx_lock, portMAX_DELAY);
+    strlcpy(s_note_id, s_turn.note_id, sizeof(s_note_id));
+    strlcpy(s_parent_id, s_turn.parent_id, sizeof(s_parent_id));
+    unsigned kept = 0;
+    for (unsigned i = 0; i < s_pending_count; i++) {
+        if (related(&s_pending[i])) s_pending[kept++] = s_pending[i];
+    }
+    s_pending_count = kept;
+    if (!related(&s_delta)) memset(&s_delta, 0, sizeof(s_delta));
+    xSemaphoreGive(s_rx_lock);
     s_turn.phase = T_REPLY;
+    emit(MUSE_HATCH_EV_SENT, NULL);
 }
 
-/* Handles the row just read; returns true to move past it. */
-static bool on_row(const row_t *r)
+/* Completed assistant events have already been correlated under the receive lock. */
+static void on_row(const row_t *r)
 {
-    if (!strcmp(r->event, "message.user")) {
-        s_turn.after_note = !strcmp(r->msg, s_turn.note_id);
-    }
-    if (s_turn.after_note && !strcmp(r->event, "message.user")) {
-        /* The row reads "<transcript>\n[file:audio/wav ...]", or "[Voice note]" before transcription. */
-        static char heard[TEXT_MAX];   /* voice task only */
-        strlcpy(heard, r->text, sizeof(heard));
-        char *att = strstr(heard, "\n[file:");
-        if (att) {
-            *att = '\0';
-        }
-        if (heard[0] && strcmp(heard, "[Voice note]") && !s_turn.heard) {
-            char line[EV_TEXT];
-            muse_hatch_tail_words(heard, line, sizeof(line));
-            emit(MUSE_HATCH_EV_HEARD, line);
-            s_turn.heard = true;
-        }
-        return true;
-    }
-    /* Replies to voice notes may leave reply_to_message_id empty: then it's whatever follows the note. */
-    if (strcmp(r->event, "message.assistant")
-        || (r->reply_to[0] ? strcmp(r->reply_to, s_turn.note_id) : !s_turn.after_note)) {
-        return true;
-    }
-    if (!r->ready) {
-        return false;   /* still being written; read it again */
+    for (unsigned i = 0; i < s_turn.seen_count; i++) {
+        if (!strcmp(r->msg, s_turn.seen[i])) return;
     }
     if (r->text[0]) {
-        size_t len = strlen(s_turn.text);
-        snprintf(s_turn.text + len, sizeof(s_turn.text) - len, "%s%s", len ? " " : "", r->text);
-        ESP_LOGI(TAG, "reply after %.2fs: %.80s", (esp_timer_get_time() - s_turn.t_end) / 1e6, r->text);
+        if (s_turn.seen_count == 2) {
+            memcpy(s_turn.seen[0], s_turn.seen[1], sizeof(s_turn.seen[0]));
+            s_turn.seen_count = 1;
+        }
+        strlcpy(s_turn.seen[s_turn.seen_count++], r->msg, sizeof(s_turn.seen[0]));
+        if (s_turn.text[0]) text_append(s_turn.text, sizeof(s_turn.text), " ");
+        text_append(s_turn.text, sizeof(s_turn.text), r->text);
         if (!s_turn.replied) {
             s_turn.t_show = esp_timer_get_time();
         }
         s_turn.replied = true;
         s_turn.t_reply = esp_timer_get_time();
     }
-    return true;
 }
 
-/* A page is in: note where the chat ends, or read the next row. */
-static void on_page(void)
+static void subscription_error(int status)
 {
-    rx_t *rx = &s_rx[RX_ROW];
-    int64_t now = esp_timer_get_time();
-    s_turn.t_poll = now + POLL_US;
-    if (rx->status != 200) {
-        ESP_LOGW(TAG, "chat/history: %d", rx->status);
-        if (rx->status < 0) {
-            fail("LOST CONNECTION TO MUSE");
-        }
-        return;
-    }
-    if (!s_row.ok) {
-        ESP_LOGW(TAG, "chat/history page unreadable%s", rx->overflow ? ", too long" : "");
-        s_turn.skipped_big |= rx->overflow;
-        return;
-    }
-    if (!s_turn.marked) {
-        s_turn.marked = true;
-        s_turn.after = s_row.found ? s_row.seq : 0;
-        s_turn.t_poll = now;
-    } else if (s_row.found && s_row.seq > s_turn.after && on_row(&s_row)) {
-        s_turn.after = s_row.seq;
-        s_turn.t_poll = now;   /* there may be more */
+    if (status == 403) fail("MUSE REPLY ACCESS DENIED (403)");
+    else if (status == 401) fail("MUSE REPLY AUTH REQUIRED (401)");
+    else if (status <= 0 || status == 200) fail("LOST CONNECTION TO MUSE");
+    else {
+        char why[EV_TEXT];
+        snprintf(why, sizeof(why), "MUSE REPLY ERROR (HTTP %d)", status);
+        fail(why);
     }
 }
 
@@ -637,8 +653,34 @@ static void pump(void)
     if (s_turn.phase == T_ACK && received(RX_NOTE)) {
         on_ack();
     }
-    if (s_turn.phase != T_IDLE && received(RX_ROW)) {
-        on_page();
+    if (s_turn.phase == T_IDLE) return;
+    /* Preserve early events until the POST ACK supplies the note IDs. */
+    static row_t pending; /* voice task only; avoid a large stack frame */
+    xSemaphoreTake(s_rx_lock, portMAX_DELAY);
+    int status = s_rx[RX_SUB].status;
+    bool closed = s_rx[RX_SUB].done;
+    bool early_evicted = s_early_evicted;
+    xSemaphoreGive(s_rx_lock);
+    if (status < 0 || status >= 400) {
+        subscription_error(status);
+        return;
+    }
+    if (s_turn.phase == T_REPLY) {
+        for (;;) {
+            xSemaphoreTake(s_rx_lock, portMAX_DELAY);
+            bool have = s_pending_count > 0;
+            if (have) {
+                pending = s_pending[0];
+                if (--s_pending_count) s_pending[0] = s_pending[1];
+            }
+            xSemaphoreGive(s_rx_lock);
+            if (!have) break;
+            on_row(&pending);
+        }
+        if (closed && !s_turn.replied) {
+            subscription_error(status);
+            return;
+        }
     }
     if (s_turn.phase != T_REPLY) {
         if (s_turn.phase == T_ACK && now - s_turn.t_end > REPLY_TIMEOUT_US) {
@@ -646,18 +688,13 @@ static void pump(void)
         }
         return;
     }
-    if (!s_stream[RX_ROW] && now >= s_turn.t_poll && !poll_row()) {
-        fail("LOST CONNECTION TO MUSE");
-        return;
-    }
     if (s_turn.replied) {
         if (scroll(now) && now - s_turn.t_reply > SETTLE_US) {
-            ESP_LOGI(TAG, "reply done: %u chars", (unsigned)strlen(s_turn.text));
             end_turn();
             emit(MUSE_HATCH_EV_DONE, NULL);
         }
     } else if (now - s_turn.t_end > REPLY_TIMEOUT_US) {
-        fail(s_turn.skipped_big ? "REPLY TOO LONG" : "NO REPLY FROM MUSE");
+        fail(early_evicted ? "REPLY BUFFER LIMIT - TRY AGAIN" : "NO REPLY FROM MUSE");
     }
 }
 
@@ -732,7 +769,7 @@ void muse_hatch_turn_begin(void)
         return;
     }
     if (!request(RX_NOTE, "POST", "/chat/stream", true, false)
-        || !muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_NOTE_HEAD, sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false, SEND_WAIT_MS)) {
+        || !muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_NOTE_HEAD_TEXT, sizeof(MUSE_HATCH_NOTE_HEAD_TEXT) - 1, false, SEND_WAIT_MS)) {
         fail("CAN'T REACH MUSE");
         return;
     }
@@ -764,6 +801,13 @@ void muse_hatch_turn_end(void)
         emit(MUSE_HATCH_EV_ERROR, s_turn.error[0] ? s_turn.error : "CAN'T REACH MUSE");
         return;
     }
+    /* Subscribe only after recording: keep inbound reply traffic out of the
+     * real-time audio upload. Queue it before the note's final body chunk. */
+    if (!request(RX_SUB, "POST", "/chat/subscribe", true, false)
+        || !muse_link_req_send(s_stream[RX_SUB], "{}", 2, true, SEND_WAIT_MS)) {
+        fail("CAN'T SUBSCRIBE TO MUSE");
+        return;
+    }
     if (!send_stage(true)) {
         fail("CAN'T KEEP UP");
         return;
@@ -774,14 +818,7 @@ void muse_hatch_turn_end(void)
     s_turn.chunk = NULL;
     s_turn.t_end = esp_timer_get_time();
     s_turn.phase = T_ACK;
-    /*
-     * Only now mark where the chat ends: the newest row is often the last
-     * reply, and reading it mid-upload leaves no room for TLS to send. Hatch
-     * adds this note's row only after transcribing it, so none is missed.
-     */
-    if (!poll_row()) {
-        fail("LOST CONNECTION TO MUSE");
-    }
+
 }
 
 void muse_hatch_turn_cancel(void)
