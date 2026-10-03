@@ -62,6 +62,10 @@ menu "Muse"
         config MUSE_BOARD_M5STACK_STICKC_PLUS2
             bool "M5Stack StickC Plus2 (ESP32, two buttons, no touch)"
             depends on IDF_TARGET_ESP32
+
+        config MUSE_BOARD_M5STACK_STOPWATCH
+            bool "M5Stack StopWatch (ESP32-S3, round touch AMOLED)"
+            depends on IDF_TARGET_ESP32S3
     endchoice
 
     config MUSE_ENABLED
@@ -81,6 +85,7 @@ menu "Muse"
         default "m5stack_sticks3" if MUSE_BOARD_M5STACK_STICKS3
         default "m5stack_stickc_plus2" if MUSE_BOARD_M5STACK_STICKC_PLUS2
         default "m5stack_cardputer_adv" if MUSE_BOARD_M5STACK_CARDPUTER_ADV
+        default "m5stack_stopwatch" if MUSE_BOARD_M5STACK_STOPWATCH
         default "none"
 
     # The Muse tools' serial port: the console UART behind the board's USB
