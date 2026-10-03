@@ -42,7 +42,8 @@ extern "C" {
  * muse_chat_link.c: the note rides Home Link's session to its paired VM and
  * replies come back as text only (no audio from turn_read). Captions retain
  * up to 1,023 UTF-8 bytes; at most two completed messages await processing.
- * Bursts can omit older messages. Use the Muse app for the full conversation.
+ * Bursts can omit older messages; subscription lines above 12 KiB are skipped.
+ * Use the Muse app for the full conversation.
  */
 
 typedef enum {

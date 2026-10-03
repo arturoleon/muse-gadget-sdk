@@ -98,19 +98,27 @@ static char s_noise_host[256] = NOISE_DEFAULT_HOST;
 // but the tunnel stream (multiplexed on this session) carries ~8 KB IP-packet
 // batches, so scratch must fit a full batch plus ServiceFrame/envelope overhead.
 // Chat subscriptions deliver 16 KB body chunks plus framing, even on boards
-// without PSRAM. Reserve enough inbound space and use smaller outbound chunks.
+// without PSRAM. Reserve enough inbound space for those frames.
 #define SVC_FRAME_SCRATCH (SMALL_CONTROL_SESSION ? 17 * 1024 : 12288)
 
+// The ADV cannot allocate the session with the larger inbound buffers and the
+// usual outbound buffers together. Keep this reduction local to that board.
+#if SMALL_CONTROL_SESSION && CONFIG_MUSE_BOARD_M5STACK_CARDPUTER_ADV
+#define CARDPUTER_CONTROL_SESSION 1
+#else
+#define CARDPUTER_CONTROL_SESSION 0
+#endif
+
 // Outbound scratch buffers. Sized for tunnel batches (8 KB) + framing overhead.
-#define OUT_SVC_SCRATCH   (SMALL_CONTROL_SESSION ? 3072 : 12288)
-#define OUT_ENV_SCRATCH   (SMALL_CONTROL_SESSION ? 3072 : 12288)
+#define OUT_SVC_SCRATCH   (CARDPUTER_CONTROL_SESSION ? 3072 : SMALL_CONTROL_SESSION ? 6144 : 12288)
+#define OUT_ENV_SCRATCH   (CARDPUTER_CONTROL_SESSION ? 3072 : SMALL_CONTROL_SESSION ? 6144 : 12288)
 
 // Max BodyChunk payload for a single control-stream ServiceFrame. Kept well
 // under the outbound scratch above so the ServiceFrame/envelope always fit;
 // larger control messages (e.g. device.discover results) are split across
 // multiple BodyChunks. The daemon reassembles by the u32-LE length prefix, so
 // chunk boundaries are transparent. Matches the proven ~8 KB tunnel batch size.
-#define CTRL_BODY_CHUNK_MAX (SMALL_CONTROL_SESSION ? 2048 : 8192)
+#define CTRL_BODY_CHUNK_MAX (CARDPUTER_CONTROL_SESSION ? 2048 : SMALL_CONTROL_SESSION ? 4096 : 8192)
 
 // WebSocket send/receive buffers. The protocol allows 64 KB frames, but
 // outbound frames are bounded by OUT_ENV_SCRATCH and inbound ones by
@@ -118,8 +126,10 @@ static char s_noise_host[256] = NOISE_DEFAULT_HOST;
 // buffers just large enough for those plus framing and the AEAD tag.
 #if CONFIG_SPIRAM
 #define WS_BUF_SIZE ClientSession::kMaxOutboundWebSocketPayloadSize
+#elif CARDPUTER_CONTROL_SESSION
+#define WS_BUF_SIZE (4 * 1024)
 #else
-#define WS_BUF_SIZE (SMALL_CONTROL_SESSION ? 4 * 1024 : 16 * 1024)
+#define WS_BUF_SIZE (SMALL_CONTROL_SESSION ? 7 * 1024 : 16 * 1024)
 #endif
 // Inbound WebSocket frames: SVC_FRAME_SCRATCH plus framing and the AEAD tag.
 #define WS_RX_BUF_SIZE (SMALL_CONTROL_SESSION ? 17 * 1024 : WS_BUF_SIZE)

@@ -63,7 +63,7 @@ class LinkNoiseTunnelTest(unittest.TestCase):
             start = control.index("static bool flush_outbound(")
             end = control.index("// ---- Tunnel stream multiplexing", start)
             # The tunnel keeps the full-size control session buffers.
-            constants = "#define SMALL_CONTROL_SESSION 0\n" + "\n".join(line for line in control.splitlines()
+            constants = "#define SMALL_CONTROL_SESSION 0\n#define CARDPUTER_CONTROL_SESSION 0\n" + "\n".join(line for line in control.splitlines()
                                   if line.startswith(("#define CTRL_STREAM_ID",
                                                       "#define CTRL_BODY_CHUNK_MAX",
                                                       "#define OUT_SVC_SCRATCH",

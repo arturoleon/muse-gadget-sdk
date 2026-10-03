@@ -31,6 +31,7 @@ class ChatLinkErrors(unittest.TestCase):
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
 #define ESP_LOGW(tag,...) ((void)(tag))
+#define ESP_LOGI(tag,...) ((void)(tag))
 #define portMAX_DELAY 0
 #define pdTRUE 1
 #define pdMS_TO_TICKS(ms) (ms)
@@ -63,12 +64,19 @@ static bool muse_link_req_ready(void) { return true; }
 typedef void (*frame_fn)(void *,int,const uint8_t *,size_t,bool);
 static struct { frame_fn cb; void *ctx; int id; } requests[2];
 static int next_id, allocation_attempts, fail_allocation, fail_send;
+static size_t largest_reallocation;
 static int operations[20], operation_count;
 static void operation(int n) { if(operation_count<20) operations[operation_count++]=n; }
 static void *test_malloc(size_t n) {
     allocation_attempts++;
     if(fail_allocation) { fail_allocation--; return NULL; }
     return malloc(n);
+}
+static void *test_realloc(void *p,size_t n) {
+    allocation_attempts++;
+    if(n>largest_reallocation) largest_reallocation=n;
+    if(fail_allocation) { fail_allocation--; return NULL; }
+    return realloc(p,n);
 }
 static int64_t muse_link_req_open(const char *verb,const char *path,const char *const *headers,
                                  bool end,frame_fn cb,void *ctx) {
@@ -103,12 +111,15 @@ void muse_hatch_wav_header(uint8_t p[MUSE_HATCH_WAV_HEADER],uint32_t rate) {
 size_t muse_hatch_base64(const uint8_t *p,size_t n,char *out) {
     (void)p; size_t len=(n+2)/3*4; memset(out,'A',len); return len;
 }
+void muse_hatch_tail_words(const char *text,char *out,size_t cap) { strlcpy(out,text,cap); }
 bool muse_hatch_caption_at(const char *text,size_t at,char *out,size_t cap) {
     (void)at; strlcpy(out,text,cap); return text[0]!=0;
 }
 #define malloc test_malloc
+#define realloc test_realloc
 ''' + source + r'''
 #undef malloc
+#undef realloc
 static void feed(int slot,int status,const char *p,size_t n,bool end) {
     requests[slot].cb(requests[slot].ctx,status,(const uint8_t*)p,n,end);
 }
@@ -135,12 +146,14 @@ static void streaming(void) {
     begin(); assert(operation_count==2 && operations[0]==1 && operations[1]==2);
     assert(!s_stream[RX_SUB]); release();
     assert(operation_count==5 && operations[2]==3 && operations[3]==4 && operations[4]==5);
+    sub("{\"type\":\"event\",\"seq\":100,\"event\":\"agent.status\",\"payload\":{\"status\":\"idle\"}}\n");
     const char *events=
         "{\"type\":\"subscribed\"}\n"
-        "{\"type\":\"event\",\"seq\":1,\"event\":\"delta.text_append\",\"payload\":{\"message_id\":\"reply\",\"parent_message_id\":\"note\",\"text\":\"Hello \"}}\n"
-        "{\"type\":\"event\",\"seq\":2,\"event\":\"delta.text_append\",\"payload\":{\"type\":\"text\",\"message_id\":\"reply\",\"text\":\"world\"}}\n"
-        "{\"type\":\"event\",\"seq\":3,\"event\":\"delta.message_done\",\"payload\":{\"message_id\":\"reply\"}}\n";
+        "{\"type\":\"event\",\"seq\":101,\"event\":\"delta.text_append\",\"payload\":{\"seq\":1,\"event_name\":\"message.assistant\",\"message_id\":\"reply\",\"parent_message_id\":\"note\",\"display_text\":null,\"content\":null,\"text\":\"Hello \"}}\n"
+        "{\"type\":\"event\",\"seq\":102,\"event\":\"delta.text_append\",\"payload\":{\"seq\":1,\"event_name\":\"message.assistant\",\"type\":\"text\",\"message_id\":\"reply\",\"text\":\"world\"}}\n"
+        "{\"type\":\"event\",\"seq\":103,\"event\":\"delta.message_done\",\"payload\":{\"seq\":1,\"event_name\":\"message.assistant\",\"message_id\":\"reply\"}}\n";
     bytewise(events); assert(s_pending_count==1 && !s_turn.replied);
+    assert(!strcmp(s_pending[0].text,"Hello world"));
     final("reply","note","Hello world"); assert(s_pending_count==1);
     note_ack(); assert_replied("Hello world");
     final("reply","note","Hello world"); assert_replied("Hello world");
@@ -173,16 +186,28 @@ static void correlation(void) {
 static void oversized(void) {
     begin(); release(); note_ack();
     bytewise("{\"type\":\"event\",\"seq\":1,\"event\":\"delta.text_append\",\"payload\":{\"message_id\":\"reply\",\"parent_message_id\":\"note\",\"text\":\"Retained text\"}}\n");
-    int before=allocation_attempts;
     sub("{\"metadata\":{\"nested\":[{\"text\":\"");
     for(int i=0;i<5000;i++) sub("x");
     bytewise("\\\"escaped\\\\text\"}]},\"payload\":{\"message_id\":\"reply\"},\"type\":\"event\",\"seq\":2,\"event\":\"delta.message_done\"}\n");
-    assert(allocation_attempts==before); assert_replied("Retained text");
+    assert(largest_reallocation<=ROW_MAX); assert_replied("Retained text");
     muse_hatch_turn_cancel(); begin(); release(); note_ack();
     sub("{\"type\":\"event\",\"event\":\"message.assistant\",\"payload\":{\"message_id\":\"long\",\"display_text\":\"");
     for(int i=0;i<5000;i++) sub("x");
     sub("\",\"reply_to_message_id\":\"note\"}}\n");
     pump(); assert(s_turn.replied && strlen(s_turn.text)==TEXT_MAX-1);
+    muse_hatch_turn_cancel(); begin(); release(); note_ack();
+    for(int i=0;i<ROW_MAX+1;i++) sub("x");
+    assert(s_skipped_big && s_rx[RX_SUB].overflow && largest_reallocation<=ROW_MAX);
+    sub("\n{\"type\":\"subscribed\"}\r\n");
+    assert(!s_rx[RX_SUB].body && !s_rx[RX_SUB].overflow);
+    final("after","note","After oversized line"); assert_replied("After oversized line");
+    muse_hatch_turn_cancel(); begin(); release(); note_ack();
+    fail_allocation=1; sub("{\"type\":"); sub("\"event\"}\n");
+    assert(s_skipped_big && !s_rx[RX_SUB].body);
+    final("oom","note","After allocation failure"); assert_replied("After allocation failure");
+    muse_hatch_turn_cancel(); begin(); release(); note_ack();
+    bytewise("{\"type\":\"event\",\"event\":\"message.assistant\",\"payload\":{\"message_id\":\"last\",\"display_text\":\"Terminal line\"}}");
+    feed(RX_SUB,200,NULL,0,true); assert_replied("Terminal line");
 }
 static void unicode_and_fields(void) {
     begin(); release(); note_ack();
@@ -227,6 +252,17 @@ static void denied_and_ack(void) {
     assert(s_turn.phase==T_IDLE && strstr(s_turn.error,"NO REPLY"));
     begin(); release(); note_ack(); final("retry","note","Recovered"); assert_replied("Recovered");
 }
+static void transcript_and_lines(void) {
+    begin(); release();
+    int before=allocation_attempts;
+    sub("{\"type\":\"event\",\"event\":\"message.user\",\"payload\":{\"message_id\":\"note\",\"display_text\":\"Hello\\n[file:audio/wav note]\"}}\r\n"
+        "{\"type\":\"event\",\"event\":\"message.assistant\",\"payload\":{\"message_id\":\"reply\",\"reply_to_message_id\":\"note\",\"display_text\":\"Hi\"}}\n");
+    assert(allocation_attempts==before); /* complete lines parse in Link's buffer */
+    note_ack(); assert_replied("Hi");
+    char text[72]; assert(muse_hatch_turn_event(text,sizeof(text))==MUSE_HATCH_EV_SENT);
+    assert(muse_hatch_turn_event(text,sizeof(text))==MUSE_HATCH_EV_HEARD && !strcmp(text,"Hello"));
+    assert(muse_hatch_turn_event(text,sizeof(text))==MUSE_HATCH_EV_REPLY);
+}
 static void text_modality(void) {
     cJSON *text=cJSON_Parse(MUSE_HATCH_NOTE_HEAD MUSE_HATCH_NOTE_TAIL);
     assert(text);
@@ -243,6 +279,7 @@ int main(int argc,char **argv) {
     case 4: retry_and_stale(); break;
     case 5: denied_and_ack(); break;
     case 6: text_modality(); break;
+    case 7: transcript_and_lines(); break;
     default: return 2;
     }
     muse_hatch_turn_cancel();
@@ -274,7 +311,7 @@ int main(int argc,char **argv) {
     def test_unrelated_events_do_not_fill_reply_queue(self):
         self.run_case(1)
 
-    def test_large_final_metadata_and_caption_use_no_receive_allocations(self):
+    def test_large_final_metadata_and_caption_use_bounded_receive_memory(self):
         self.run_case(2)
 
     def test_field_precedence_escaping_and_utf8_boundaries(self):
@@ -288,3 +325,6 @@ int main(int argc,char **argv) {
 
     def test_shared_voice_note_format_requests_text_replies(self):
         self.run_case(6)
+
+    def test_transcript_and_multiple_complete_lines_need_no_receive_allocation(self):
+        self.run_case(7)
