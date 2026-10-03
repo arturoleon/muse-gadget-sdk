@@ -143,7 +143,7 @@ static lv_display_t *display_start(lv_indev_t **touch)
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_10_BIT,
         .timer_num = LEDC_TIMER_0,
-        .freq_hz = 20000,
+        .freq_hz = 256, /* match M5GFX's Cardputer ADV backlight timing */
         .clk_cfg = LEDC_AUTO_CLK,
     };
     const ledc_channel_config_t bl_ch = {
