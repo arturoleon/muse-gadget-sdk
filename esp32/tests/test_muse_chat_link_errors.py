@@ -227,13 +227,11 @@ static void denied_and_ack(void) {
     assert(s_turn.phase==T_IDLE && strstr(s_turn.error,"NO REPLY"));
     begin(); release(); note_ack(); final("retry","note","Recovered"); assert_replied("Recovered");
 }
-static void modalities(void) {
-    cJSON *voice=cJSON_Parse(MUSE_HATCH_NOTE_HEAD MUSE_HATCH_NOTE_TAIL);
-    cJSON *text=cJSON_Parse(MUSE_HATCH_NOTE_HEAD_TEXT MUSE_HATCH_NOTE_TAIL);
-    assert(voice && text);
-    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(voice,"output_modality")),"voice"));
+static void text_modality(void) {
+    cJSON *text=cJSON_Parse(MUSE_HATCH_NOTE_HEAD MUSE_HATCH_NOTE_TAIL);
+    assert(text);
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(text,"output_modality")),"text"));
-    cJSON_Delete(voice); cJSON_Delete(text);
+    cJSON_Delete(text);
 }
 int main(int argc,char **argv) {
     assert(argc==2); muse_hatch_start();
@@ -244,7 +242,7 @@ int main(int argc,char **argv) {
     case 3: unicode_and_fields(); break;
     case 4: retry_and_stale(); break;
     case 5: denied_and_ack(); break;
-    case 6: modalities(); break;
+    case 6: text_modality(); break;
     default: return 2;
     }
     muse_hatch_turn_cancel();
@@ -288,5 +286,5 @@ int main(int argc,char **argv) {
     def test_authorization_failures_closed_stream_and_timeout_recover(self):
         self.run_case(5)
 
-    def test_low_memory_requests_text_without_changing_voice_boards(self):
+    def test_shared_voice_note_format_requests_text_replies(self):
         self.run_case(6)

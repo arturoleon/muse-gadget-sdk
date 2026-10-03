@@ -769,7 +769,7 @@ void muse_hatch_turn_begin(void)
         return;
     }
     if (!request(RX_NOTE, "POST", "/chat/stream", true, false)
-        || !muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_NOTE_HEAD_TEXT, sizeof(MUSE_HATCH_NOTE_HEAD_TEXT) - 1, false, SEND_WAIT_MS)) {
+        || !muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_NOTE_HEAD, sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false, SEND_WAIT_MS)) {
         fail("CAN'T REACH MUSE");
         return;
     }

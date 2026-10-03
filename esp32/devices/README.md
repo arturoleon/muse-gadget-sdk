@@ -63,8 +63,7 @@ Boards without PSRAM (the ideaspark, Waveshare C6 and Cardputer ADV) don't have 
 the home-network tunnel. Muse can still reach and control them once the
 control session is up. The Waveshare C6 and Cardputer ADV also can't hold their own voice
 session, so push-to-talk sends your voice note over its control session to the
-Muse it's paired with, and the reply scrolls past as text instead of being
-spoken. It can't show images either: the UI holds a whole image in
+Muse it's paired with, and the reply scrolls past as text. It can't show images either: the UI holds a whole image in
 PSRAM, where the ideaspark draws one straight to its screen.
 
 The SenseCAP Indicator's sensors hang off its RP2040, which passes the
