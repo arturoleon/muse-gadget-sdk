@@ -43,6 +43,10 @@ menu "Muse"
             bool "Seeed SenseCAP Watcher (ESP32-S3, round touch LCD, wheel)"
             depends on IDF_TARGET_ESP32S3
 
+        config MUSE_BOARD_M5STACK_CARDPUTER_ADV
+            bool "M5Stack Cardputer ADV (ESP32-S3, keyboard, no PSRAM)"
+            depends on IDF_TARGET_ESP32S3
+
         config MUSE_BOARD_M5STACK_STICKS3
             bool "M5Stack StickS3 (ESP32-S3, two buttons, no touch)"
             depends on IDF_TARGET_ESP32S3
@@ -66,6 +70,7 @@ menu "Muse"
         default "sensecap_watcher" if MUSE_BOARD_SENSECAP_WATCHER
         default "m5stack_sticks3" if MUSE_BOARD_M5STACK_STICKS3
         default "m5stack_stickc_plus2" if MUSE_BOARD_M5STACK_STICKC_PLUS2
+        default "m5stack_cardputer_adv" if MUSE_BOARD_M5STACK_CARDPUTER_ADV
         default "none"
 
     # The Muse tools' serial port: the console UART behind the board's USB

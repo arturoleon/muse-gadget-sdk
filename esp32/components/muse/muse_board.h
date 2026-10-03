@@ -41,6 +41,13 @@ extern "C" {
 #define MUSE_BTN_TALK_RELEASE (1u << 1)
 #define MUSE_BTN_AUX_PRESS    (1u << 2)
 #define MUSE_BTN_AUX_RELEASE  (1u << 3)
+/* Keyboard navigation presses, independent of the two-button controls. */
+#define MUSE_BTN_UP           (1u << 4)
+#define MUSE_BTN_DOWN         (1u << 5)
+#define MUSE_BTN_LEFT         (1u << 6)
+#define MUSE_BTN_RIGHT        (1u << 7)
+#define MUSE_BTN_ENTER        (1u << 8)
+#define MUSE_BTN_ESCAPE       (1u << 9)
 
 /* Where a button's icon goes on screen: beside the button, inside the panel. */
 typedef struct {
@@ -54,6 +61,7 @@ typedef struct {
     bool round;             /* circular panel: keep content inside the circle */
     bool touch;             /* no touch: no settings screen, set up over BLE */
     float diagonal_in;      /* screen size; under 2" typing uses a keypad with bigger keys */
+    bool keyboard;          /* dedicated menu navigation keys */
     const char *talk_button;    /* where the buttons are, for captions: "top" */
     const char *aux_button;     /* "bottom" */
     muse_button_hint_t talk_hint;   /* mic icon; the menu's hints follow both */

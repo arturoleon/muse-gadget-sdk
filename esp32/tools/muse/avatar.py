@@ -63,6 +63,7 @@ BOARDS = {
     "Waveshare ESP32-C6-Touch-AMOLED-1.8": "c6",
     "Seeed SenseCAP Watcher": "watcher",
     "M5Stack StickS3": "sticks3",
+    "M5Stack Cardputer ADV": "cardputer-adv",
     "M5Stack StickC Plus2": "plus2",
 }
 CHAT_BOARDS = ("s3", "aipi", "sticks3", "watcher")

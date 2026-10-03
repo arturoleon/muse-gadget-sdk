@@ -166,13 +166,21 @@ static void set_text(lv_obj_t *l, const char *text)
     }
 }
 
-static int next_step(const int *steps, int n, int cur)
+static void select_hint(const char *action)
 {
-    int i = -1;
-    while (i + 1 < n && steps[i + 1] <= cur) {
-        i++;
+    char text[40];
+    snprintf(text, sizeof(text), "%s%s", muse_board->keyboard ? "Enter " : "", action);
+    set_text(s_hint_select, text);
+}
+
+static int value_step(const int *steps, int n, int cur, int direction)
+{
+    if (direction < 0) {
+        for (int i = n - 1; i >= 0; --i) if (steps[i] < cur) return steps[i];
+        return steps[n - 1];
     }
-    return steps[(i + 1) % n];
+    for (int i = 0; i < n; ++i) if (steps[i] > cur) return steps[i];
+    return steps[0];
 }
 
 static const char *sleep_name(int secs)
@@ -310,7 +318,7 @@ static void refresh(void)
                 s_first = s_sel - s_visible_rows + 1;
             }
             lv_obj_scroll_to_y(s_list, s_first * s_row_h, LV_ANIM_OFF);
-            set_text(s_hint_select, ITEM_ACTIONS[s_sel]);
+            select_hint(ITEM_ACTIONS[s_sel]);
             s_shown_sel = s_sel;
         }
     } else if (s_view == VIEW_STATUS) {
@@ -340,27 +348,27 @@ static void show(view_t view)
     case VIEW_STATUS:
     case VIEW_BATTERY:
         set_text(s_title, view == VIEW_STATUS ? "STATUS" : "BATTERY");
-        set_text(s_hint_down, "Back");
-        set_text(s_hint_select, "Back");
+        set_text(s_hint_down, muse_board->keyboard ? "Esc Back" : "Back");
+        select_hint("Back");
         break;
     case VIEW_POWER: {
         char text[96];
         snprintf(text, sizeof(text), "Turn Muse off?\n\nPress the %s button to turn it back on.",
-                 muse_board->aux_button);
+                 muse_board->keyboard ? "GO" : muse_board->aux_button);
         set_text(s_title, "POWER OFF");
         set_text(s_page, text);
-        set_text(s_hint_down, "Cancel");
-        set_text(s_hint_select, "Power off");
+        set_text(s_hint_down, muse_board->keyboard ? "Esc Cancel" : "Cancel");
+        select_hint("Power off");
         break;
     }
     case VIEW_RESET:
         set_text(s_title, "RESET PAIRING");
         set_text(s_page, "Forget Wi-Fi and the Muse app pairing, then restart?");
-        set_text(s_hint_down, "Cancel");
-        set_text(s_hint_select, "Reset");
+        set_text(s_hint_down, muse_board->keyboard ? "Esc Cancel" : "Cancel");
+        select_hint("Reset");
         break;
     default:
-        set_text(s_title, "MENU");
+        set_text(s_title, muse_board->keyboard ? "MENU  ^v Move  <> Change" : "MENU");
         set_text(s_hint_down, s_down_text);
         break;
     }
@@ -377,25 +385,25 @@ static void open_menu(void)
     s_open = true;
 }
 
-static void activate(int item)
+static void activate(int item, int direction)
 {
     ESP_LOGI(TAG, "select %s", ITEM_NAMES[item]);
     switch (item) {
     case ITEM_VOLUME:
-        muse_settings_set_volume(next_step(VOLUME_STEPS, COUNT(VOLUME_STEPS), muse_settings_volume()));
+        muse_settings_set_volume(value_step(VOLUME_STEPS, COUNT(VOLUME_STEPS), muse_settings_volume(), direction));
         muse_voice_request_chirp();
         break;
     case ITEM_SPEAKER:
         muse_settings_set_speaker_on(!muse_settings_speaker_on());
         break;
     case ITEM_BRIGHTNESS:
-        muse_settings_set_brightness(next_step(BRIGHT_STEPS, COUNT(BRIGHT_STEPS), muse_settings_brightness()));
+        muse_settings_set_brightness(value_step(BRIGHT_STEPS, COUNT(BRIGHT_STEPS), muse_settings_brightness(), direction));
         break;
     case ITEM_MIC:
-        muse_settings_set_mic_gain(next_step(GAIN_STEPS, COUNT(GAIN_STEPS), muse_settings_mic_gain()));
+        muse_settings_set_mic_gain(value_step(GAIN_STEPS, COUNT(GAIN_STEPS), muse_settings_mic_gain(), direction));
         break;
     case ITEM_SLEEP:
-        muse_settings_set_sleep_s(next_step(SLEEP_STEPS, COUNT(SLEEP_STEPS), muse_settings_sleep_s()));
+        muse_settings_set_sleep_s(value_step(SLEEP_STEPS, COUNT(SLEEP_STEPS), muse_settings_sleep_s(), direction));
         break;
     case ITEM_PHONE:
         muse_settings_set_ble_on(!muse_settings_ble_on());
@@ -427,41 +435,45 @@ static void activate(int item)
     refresh();
 }
 
+/* Only Enter/Select may activate a confirmation. Arrow keys never confirm
+ * reset/power-off, and left/right only adjust actual settings in the list. */
 static void handle(muse_menu_key_t key)
 {
     switch (s_view) {
     case VIEW_CLOSED:
-        if (key == MUSE_MENU_DOWN) {
-            open_menu();
-        }
+        if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP ||
+            key == MUSE_MENU_BACK || key == MUSE_MENU_SELECT) open_menu();
         break;
     case VIEW_LIST:
-        if (key == MUSE_MENU_DOWN) {
-            s_sel = (s_sel + 1) % ITEM_COUNT;
+        if (key == MUSE_MENU_BACK) {
+            muse_menu_close();
+        } else if (key == MUSE_MENU_DOWN || key == MUSE_MENU_UP) {
+            s_sel = (s_sel + (key == MUSE_MENU_UP ? ITEM_COUNT - 1 : 1)) % ITEM_COUNT;
             refresh();
-        } else {
-            activate(s_sel);
+        } else if (key == MUSE_MENU_SELECT) {
+            activate(s_sel, 1);
+        } else if ((key == MUSE_MENU_LEFT || key == MUSE_MENU_RIGHT) && s_sel <= ITEM_WIFI) {
+            activate(s_sel, key == MUSE_MENU_LEFT ? -1 : 1);
         }
         break;
     case VIEW_STATUS:
     case VIEW_BATTERY:
-        show(VIEW_LIST);
+        if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT ||
+            key == MUSE_MENU_SELECT || key == MUSE_MENU_DOWN) show(VIEW_LIST);
         break;
     case VIEW_POWER:
-        if (key == MUSE_MENU_DOWN) {
-            show(VIEW_LIST);
-        } else {
-            muse_menu_close();
-            muse_input_request_power_off();
-        }
-        break;
     case VIEW_RESET:
-        if (key == MUSE_MENU_DOWN) {
+        if (key == MUSE_MENU_BACK || key == MUSE_MENU_LEFT ||
+            key == MUSE_MENU_DOWN || key == MUSE_MENU_UP) {
             show(VIEW_LIST);
-        } else {
+        } else if (key == MUSE_MENU_SELECT) {
+            bool power = s_view == VIEW_POWER;
             muse_menu_close();
-            muse_state_set_caption("RESETTING...");
-            muse_link_reset_setup();
+            if (power) muse_input_request_power_off();
+            else {
+                muse_state_set_caption("RESETTING...");
+                muse_link_reset_setup();
+            }
         }
         break;
     }
@@ -574,7 +586,7 @@ void muse_menu_build(lv_obj_t *parent, int w, int h)
         lv_obj_set_style_transform_pivot_y(s_hint_down, lv_pct(50), 0);
         lv_obj_align(s_hint_down, LV_ALIGN_CENTER, (w - strip) / 2, aux->y);
     } else {
-        s_down_text = LV_SYMBOL_DOWN " Down";
+        s_down_text = muse_board->keyboard ? "Esc Back" : LV_SYMBOL_DOWN " Down";
         align_on_bar(s_hint_down, aux->align, pad);
     }
     s_hint_select = label(s_root, font, COLOR_TEXT, "");

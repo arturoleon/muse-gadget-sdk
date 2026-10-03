@@ -20,3 +20,7 @@ build/
 .claude/
 # Interactive simulator screenshot.
 muse-simulator.ppm
+
+# Local gadget provisioning and original-device flash backups.
+.sdk-token
+/backups/

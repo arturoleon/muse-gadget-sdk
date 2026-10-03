@@ -21,14 +21,19 @@
 #include "lvgl.h"
 
 /*
- * Two-button menu for boards without touch, in place of the settings tile.
- * The aux button opens it and then steps down the list; the talk button
- * selects. Hints above the buttons say what each one does.
+ * Menu for boards without touch, in place of the settings tile.
+ * On two-button boards, aux opens it and steps down; talk selects.
+ * Keyboard boards use arrows, Enter and Esc, leaving Space/GO for talk.
+ * Hints above the buttons say what each one does.
  */
 
 typedef enum {
     MUSE_MENU_DOWN,     /* aux button: opens the menu, then moves down */
-    MUSE_MENU_SELECT,   /* talk button, while the menu is open */
+    MUSE_MENU_SELECT,   /* Enter, or talk button on two-button boards */
+    MUSE_MENU_UP,
+    MUSE_MENU_LEFT,     /* decrease the selected value */
+    MUSE_MENU_RIGHT,    /* increase the selected value */
+    MUSE_MENU_BACK,     /* open from the face, otherwise back/cancel */
 } muse_menu_key_t;
 
 /* Safe from any task. */

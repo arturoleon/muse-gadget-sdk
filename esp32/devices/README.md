@@ -38,28 +38,29 @@ session to Muse. The rest depends on the hardware.
 | **AIPI Lite** | ESP32-S3 | 128×128 LCD | 16 MB / 8 MB | [xiaozhi-esp32 board](https://github.com/78/xiaozhi-esp32/tree/main/main/boards/xorigin/aipi-lite) | [AliExpress](https://www.aliexpress.com/w/wholesale-aipi-lite.html) |
 | **Waveshare ESP32-C6-Touch-AMOLED-1.8** | ESP32-C6 | 1.8" 368×448 AMOLED, touch | 16 MB / none | [Waveshare wiki](https://www.waveshare.com/wiki/ESP32-C6-Touch-AMOLED-1.8) | [Waveshare](https://www.waveshare.com/esp32-c6-touch-amoled-1.8.htm) |
 | **Seeed SenseCAP Watcher** | ESP32-S3 | 1.45" 412×412 round LCD, touch | 32 MB / 8 MB | [Seeed wiki](https://wiki.seeedstudio.com/watcher/), [GitHub](https://github.com/Seeed-Studio/SenseCAP-Watcher-Firmware) | [Seeed Studio](https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html) |
+| **M5Stack Cardputer ADV (experimental)** | ESP32-S3 | 1.14" 240×135 LCD | 8 MB / none | [M5Stack docs](https://docs.m5stack.com/en/core/Cardputer-Adv) | — |
 | **M5Stack StickS3** | ESP32-S3 | 1.14" 135×240 LCD | 8 MB / 8 MB | [M5Stack docs](https://docs.m5stack.com/en/core/StickS3), [M5Unified](https://github.com/m5stack/M5Unified) | [M5Stack](https://shop.m5stack.com/products/m5sticks3-esp32s3-mini-iot-dev-kit) |
 | **M5Stack StickC Plus2** | ESP32 | 1.14" 135×240 LCD | 8 MB / 2 MB | [M5Stack docs](https://docs.m5stack.com/en/core/M5StickC%20PLUS2), [M5Unified](https://github.com/m5stack/M5Unified) | [M5Stack](https://shop.m5stack.com/products/m5stickc-plus2-esp32-mini-iot-development-kit) (end of life) |
 
 ## Features
 
-| | DevKitC-1 | ideaspark | SenseCAP Indicator | reTerminal E1001 | HA Voice PE | Waveshare S3 1.75C | AIPI Lite | Waveshare C6 1.8 | Watcher | StickS3 | StickC Plus2 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Home-network tunnel | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
-| Shows status on | Light | Screen | Screen | E-paper | Light ring | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar |
-| Images from Muse | — | ✅ | ✅ | Black and white | — | ✅ | ✅ | — | ✅ | ✅ | ✅ |
-| UI and settings | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Push-to-talk | — | — | — | — | ✅ | ✅ | ✅ | Text replies | ✅ | ✅ | ✅ |
-| Speaker and mic | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Buzzer and mic |
-| Air sensors | — | — | D1S, D1Pro | — | — | — | — | — | — | — | — |
-| Touch | — | — | — | — | — | ✅ | — | ✅ | ✅ | — | — |
-| Battery status | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | Voltage only |
-| Over-the-air updates | Off | Off | Off | Off | Off | On | On | On | On | On | On |
-| Buttons | BOOT | BOOT | Top | Green | Centre (talk), dial | PWR (talk), BOOT | Two | BOOT (talk), PWR | Wheel (press to talk, turn to sleep) | Front (talk), side (menu), PWR | Front (talk), side (menu), PWR |
+| | DevKitC-1 | ideaspark | SenseCAP Indicator | reTerminal E1001 | HA Voice PE | Waveshare S3 1.75C | AIPI Lite | Waveshare C6 1.8 | Watcher | StickS3 | StickC Plus2 | Cardputer ADV |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:| :-: |
+| Home-network tunnel | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — |
+| Shows status on | Light | Screen | Screen | E-paper | Light ring | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar | Avatar |
+| Images from Muse | — | ✅ | ✅ | Black and white | — | ✅ | ✅ | — | ✅ | ✅ | ✅ | — |
+| UI and settings | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Experimental |
+| Push-to-talk | — | — | — | — | ✅ | ✅ | ✅ | Text replies | ✅ | ✅ | ✅ | Text replies (experimental) |
+| Speaker and mic | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Buzzer and mic | ES8311 (experimental) |
+| Air sensors | — | — | D1S, D1Pro | — | — | — | — | — | — | — | — | — |
+| Touch | — | — | — | — | — | ✅ | — | ✅ | ✅ | — | — | — |
+| Battery status | — | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | Voltage only | — |
+| Over-the-air updates | Off | Off | Off | Off | Off | On | On | On | On | On | On | Off |
+| Buttons | BOOT | BOOT | Top | Green | Centre (talk), dial | PWR (talk), BOOT | Two | BOOT (talk), PWR | Wheel (press to talk, turn to sleep) | Front (talk), side (menu), PWR | Front (talk), side (menu), PWR | GO/Space (talk), Esc/Enter/arrows (menu) |
 
-Boards without PSRAM (the ideaspark and the Waveshare C6) don't have room for
+Boards without PSRAM (the ideaspark, Waveshare C6 and Cardputer ADV) don't have room for
 the home-network tunnel. Muse can still reach and control them once the
-control session is up. The Waveshare C6 also can't hold its own voice
+control session is up. The Waveshare C6 and Cardputer ADV also can't hold their own voice
 session, so push-to-talk sends your voice note over its control session to the
 Muse it's paired with, and the reply scrolls past as text instead of being
 spoken. It can't show images either: the UI holds a whole image in
@@ -163,6 +164,45 @@ python -m esptool --chip esp32 -p PORT -b 230400 read-flash 0 0x800000 plus2.bin
 To go back, write the backup with `write-flash 0 plus2.bin`, using the same
 chip, port and baud.
 
+## Cardputer ADV port
+
+Experimental port, tested on Cardputer ADV hardware with ESP-IDF 6.0.1:
+240×135 display, keyboard navigation, BLE/Wi-Fi pairing, voice-note upload,
+and text reply captions. Audio capture/playback timing was checked at 16 kHz.
+The no-PSRAM profile requests text replies over the live chat subscription;
+subscription begins at release to keep inbound traffic out of recording.
+
+This profile is for the **ADV**, not the original Cardputer's GPIO keyboard.
+The TCA8418 keyboard uses **Space** or **GO** for talk/confirm outside the
+menu. **Esc** opens the menu, backs out of a page or cancels a confirmation;
+on the menu list it closes the menu. **Enter** selects (and confirms pairing).
+**Up/Down** move through rows, **Left/Right** decrease/increase values. The
+arrow legends share `;` (up), `.` (down), `,` (left), `/` (right); they work
+with or without Fn. Space/GO do not change settings while the menu is open.
+The other keys do not type chat messages in this initial port.
+
+No PSRAM: voice input uses the existing control session and replies are text.
+Long or multi-message replies can be shortened; use the Muse app for the
+full conversation. Spoken replies, images and the home-network tunnel are
+disabled. Battery
+telemetry, SD, IMU,
+IR and expansion peripherals are not implemented. Power off in the menu
+enters deep sleep; GO wakes it. Use the side switch for physical power off.
+
+Build with `tools/muse/board.sh build cardputer-adv`, then flash with
+`tools/muse/board.sh flash cardputer-adv PORT`. Set your SDK token in the
+ignored `build-muse-m5stack-cardputer-adv/sdkconfig`, not a board overlay.
+For initial flashing, switch off, hold GO while connecting USB, then release
+GO. Back up the 8 MB flash before replacing existing firmware:
+
+```sh
+python -m esptool --chip esp32s3 -p PORT read-flash 0 0x800000 cardputer-adv-backup.bin
+```
+
+Keep backups outside Git; they can contain saved Wi-Fi credentials. Restore
+with `write-flash 0 cardputer-adv-backup.bin`. Pair through Muse app Settings >
+Devices > Developer mode, then Add Device, and press GO when prompted.
+
 ## Build
 
 From the `esp32` directory, load `sdkconfig.defaults` first and then the
@@ -179,6 +219,7 @@ board's overlays, in order:
 | AIPI Lite | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-aipi`](sdkconfig.muse-aipi) | by hand |
 | Waveshare C6 1.8 | `esp32c6` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-waveshare-c6-18`](sdkconfig.muse-waveshare-c6-18) | by hand |
 | SenseCAP Watcher | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-sensecap-watcher`](sdkconfig.muse-sensecap-watcher) | by hand |
+| M5Stack Cardputer ADV | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cardputer-adv` | `tools/muse/board.sh build cardputer-adv` |
 | M5Stack StickS3 | `esp32s3` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-m5stack-sticks3`](sdkconfig.muse-m5stack-sticks3) | by hand |
 | M5Stack StickC Plus2 | `esp32` | [`devices/sdkconfig.muse`](sdkconfig.muse), [`devices/sdkconfig.muse-m5stack-stickc-plus2`](sdkconfig.muse-m5stack-stickc-plus2) | by hand |
 
@@ -193,7 +234,7 @@ idf.py -B build-muse-aipi -DIDF_TARGET=esp32s3 \
 ```
 
 To flash, add `-p PORT flash` with the same arguments. Boards with the full UI need 16 MB
-of flash or more, except the StickS3 and StickC Plus2, whose overlays switch
+of flash or more, except the StickS3, StickC Plus2 and Cardputer ADV, whose overlays switch
 to the 8 MB layout in [`partitions_muse_8mb.csv`](../partitions_muse_8mb.csv).
 [`AGENTS.md`](../AGENTS.md) covers flashing, monitoring, and what to do when a
 build picks up stale settings.

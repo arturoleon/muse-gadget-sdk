@@ -238,7 +238,7 @@ static void talk_button(unsigned ev)
             talk_down = true;
         } else if (muse_menu_is_open()) {
             muse_state_poke();
-            muse_menu_key(MUSE_MENU_SELECT);
+            if (!muse_board->keyboard) muse_menu_key(MUSE_MENU_SELECT);
             swallow = true;
         } else {
             post(MUSE_PTT_DOWN, false);
@@ -257,6 +257,30 @@ static void talk_button(unsigned ev)
     }
 #endif
     s_talk_down = talk_down;
+}
+
+/* Keyboard menus don't repurpose Space/GO as Select. Navigation wakes the
+ * screen without accidentally changing a setting; Enter can confirm pairing. */
+static void keyboard_buttons(unsigned ev)
+{
+    const unsigned mask = MUSE_BTN_UP | MUSE_BTN_DOWN | MUSE_BTN_LEFT |
+                          MUSE_BTN_RIGHT | MUSE_BTN_ENTER | MUSE_BTN_ESCAPE;
+    if (!(ev & mask) || s_talk_down) return;
+    if ((ev & MUSE_BTN_ENTER) && muse_link_talk_press()) {
+        muse_state_poke();
+        return;
+    }
+    if (muse_state_asleep()) {
+        set_asleep(false, "keyboard");
+        return;
+    }
+    muse_state_poke();
+    if (ev & MUSE_BTN_ESCAPE) muse_menu_key(MUSE_MENU_BACK);
+    else if (ev & MUSE_BTN_UP) muse_menu_key(MUSE_MENU_UP);
+    else if (ev & MUSE_BTN_DOWN) muse_menu_key(MUSE_MENU_DOWN);
+    else if (ev & MUSE_BTN_LEFT) muse_menu_key(MUSE_MENU_LEFT);
+    else if (ev & MUSE_BTN_RIGHT) muse_menu_key(MUSE_MENU_RIGHT);
+    else if (ev & MUSE_BTN_ENTER) muse_menu_key(MUSE_MENU_SELECT);
 }
 
 /* A pairing prompt wakes the screen and keeps it on; otherwise idle sleeps. */
@@ -371,6 +395,7 @@ static void input_task(void *arg)
                      ev & MUSE_BTN_TALK_RELEASE ? " release" : "");
             talk_button(ev);
         }
+        keyboard_buttons(ev);
         bool aux_edge = false;
         if ((ev & MUSE_BTN_AUX_PRESS) && !aux_down) {
             aux_down = aux_edge = true;
